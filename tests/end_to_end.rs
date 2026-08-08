@@ -2112,6 +2112,7 @@ fn feature_profiles_union_reachability_across_configurations() {
         .command()
         .arg("--graph-dir")
         .arg(graph_dir.path())
+        .args(["-W", "hawk::test_only"])
         .output()
         .expect("run cargo-hawk");
 
@@ -2133,6 +2134,10 @@ fn feature_profiles_union_reachability_across_configurations() {
         "API used by the default-disabled profile was diagnosed:\n{stdout}"
     );
     assert!(stdout.contains("`unused_api` is public"));
+    assert!(
+        !stdout.contains("hawk::test_only"),
+        "API live in one production profile was classified as test-only:\n{stdout}"
+    );
     assert!(stdout.contains("`app --bin app` across 2 feature profiles"));
 
     for profile in ["0-all", "1-fallback"] {
@@ -3797,4 +3802,47 @@ fn reports_only_dead_public_findings_as_json() {
             .iter()
             .all(|diagnostic| diagnostic["code"] != "hawk::unnecessary_public")
     );
+}
+
+#[test]
+fn reports_public_functions_consumed_only_by_integration_tests() {
+    let context = HawkTestContext::new("test_only");
+    let output = context.run(&["--only", "test-only", "-W", "hawk::test_only"]);
+
+    context.assert_success(&output);
+    let stdout = context.normalized_stdout(&output);
+    assert!(stdout.contains(
+        "warning[hawk::test_only]: `integration_only` is reachable only from non-production targets"
+    ));
+    assert!(stdout.contains("consider removing this declaration and its non-production uses"));
+    assert!(stdout.contains("hawk: 1 finding(s)"));
+    assert!(stdout.contains("hawk::test_only: 1 (library: 1)"));
+    assert!(!stdout.contains("hawk::unnecessary_public"));
+}
+
+#[test]
+fn test_only_json_diagnostics_have_independent_severity_and_classification() {
+    let context = HawkTestContext::new("test_only");
+    let output = context.run(&[
+        "--only",
+        "test-only",
+        "-D",
+        "hawk::test_only",
+        "--output-format=json",
+    ]);
+
+    assert!(
+        !output.status.success(),
+        "denied test-only lint should fail"
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout contains one JSON report");
+    assert_eq!(report["summary"]["diagnostic_count"], 1);
+    let diagnostic = &report["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "hawk::test_only");
+    assert_eq!(diagnostic["kind"], "test_only");
+    assert_eq!(diagnostic["severity"], "error");
+    assert_eq!(diagnostic["identity"]["item"], "integration_only");
+    assert_eq!(diagnostic["test_only"], true);
+    assert_eq!(diagnostic["test_compiled_only"], false);
 }

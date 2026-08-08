@@ -264,6 +264,15 @@ attributes indicate external addressing or explicit retention, such as
 A conservative root establishes liveness only; it does not require public
 Rust visibility.
 
+Before applying visibility requirements, Hawk independently reports
+`hawk::test_only` for every supported source declaration that exists in the
+production graph, is absent from production reachability, and is present in
+non-production reachability. This classification deliberately ignores whether
+a compiled cross-crate test requires public visibility: that requirement can
+prevent a visibility reduction, but it does not turn a test consumer into a
+production consumer. Declarations that exist only in a test compilation are
+kept separate and are not `hawk::test_only` findings.
+
 Separately, Hawk computes the declarations whose public visibility is
 required. Any compiled cross-crate reference requires the referenced
 declaration to retain visibility, regardless of whether the referencing item
@@ -361,6 +370,10 @@ The visibility diagnostics are `hawk::dead_public`, `hawk::unnecessary_public`,
 enable it explicitly to prefer `pub(super)` over `pub(crate)`. Configuration
 validation adds `hawk::unknown_item`, `hawk::ambiguous_item`, and
 `hawk::unfulfilled_expectation`.
+
+The independent `hawk::test_only` diagnostic is also allow-by-default and
+report-only. `--only test-only -D hawk::test_only` turns it into a focused CI
+gate without suppressing configuration diagnostics.
 
 Hawk's workspace-level decisions do not naturally map to source attributes in
 a single crate compilation. Instead, `hawk.toml` carries documented

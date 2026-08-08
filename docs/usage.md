@@ -168,7 +168,7 @@ Hawk accepts Clippy-style ordered `-A`/`--allow`, `-W`/`--warn`, and
 
 The supported selectors are `warnings`, `hawk::dead_public`,
 `hawk::unnecessary_public`, `hawk::unnecessary_restricted_visibility`,
-`hawk::unnecessary_crate_visibility`, `hawk::unknown_item`,
+`hawk::unnecessary_crate_visibility`, `hawk::test_only`, `hawk::unknown_item`,
 `hawk::ambiguous_item`, and `hawk::unfulfilled_expectation`. Denied diagnostics
 are emitted as errors and cause a non-zero exit status. Invalid configuration
 and failed instrumented Cargo builds fail independently of lint levels.
@@ -194,6 +194,26 @@ package. Hawk reports configuration diagnostics separately under
 `-D hawk::unnecessary_crate_visibility`. The `warnings` group does not enable
 allow-by-default lints.
 
+`hawk::test_only` is also allow-by-default. It reports source declarations
+compiled in production but reachable exclusively from non-production roots:
+tests, benches, examples, or doctests. Unlike visibility diagnostics, it is
+reported even when a cross-crate integration test requires the declaration to
+remain public. Declarations compiled only under `cfg(test)` are not included.
+Use it as a focused deletion-candidate gate with:
+
+```sh
+./target/debug/cargo-hawk check \
+  --manifest-path /path/to/workspace/Cargo.toml \
+  --only test-only \
+  -D hawk::test_only
+```
+
+The lint covers source-written functions, inherent methods and associated
+constants, traits, structs, enums, unions, type aliases, constants, statics,
+fields, enum variants, explicitly visible named re-exports, and modules. It is
+report-only; removing a declaration and its non-production consumers requires
+a coordinated source edit.
+
 ## Apply fixes
 
 Pass `--fix` to apply visibility reductions through Cargo's fix machinery:
@@ -209,12 +229,14 @@ visibility findings. `hawk::unnecessary_public` reduces `pub` to `pub(crate)`.
 `hawk::unnecessary_restricted_visibility` removes an explicit restricted
 visibility modifier when the item can be private.
 `hawk::unnecessary_crate_visibility` optionally reduces `pub(crate)` to
-`pub(super)`. `hawk::dead_public` remains report-only because a
-visibility-only edit can activate rustc's `dead_code` lint; removing dead
-surface may require editing its remaining internal uses. Hawk delegates edit
-application and validation to `cargo fix`, including Cargo's source-control
-safety checks; pass `--allow-dirty`, `--allow-staged`, or `--allow-no-vcs`
-with `--fix` when the corresponding Cargo override is appropriate.
+`pub(super)`. `hawk::dead_public` remains report-only because a visibility-only
+edit can activate rustc's `dead_code` lint; removing dead surface may require
+editing its remaining internal uses. `hawk::test_only` is report-only because
+removing a declaration requires removing its non-production consumers as well.
+Hawk delegates edit application and validation to `cargo fix`, including
+Cargo's source-control safety checks; pass `--allow-dirty`, `--allow-staged`,
+or `--allow-no-vcs` with `--fix` when the corresponding Cargo override is
+appropriate.
 
 Fixes are limited to workspace library packages in the configured production
 or non-production surface. Hawk rechecks configured production targets and

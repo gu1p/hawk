@@ -219,6 +219,7 @@ pub enum FindingKind {
     UnnecessaryPublic,
     UnnecessaryRestrictedVisibility,
     UnnecessaryCrateVisibility,
+    TestOnly,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -246,6 +247,7 @@ impl FindingKind {
             Self::UnnecessaryPublic => "hawk::unnecessary_public",
             Self::UnnecessaryRestrictedVisibility => "hawk::unnecessary_restricted_visibility",
             Self::UnnecessaryCrateVisibility => "hawk::unnecessary_crate_visibility",
+            Self::TestOnly => "hawk::test_only",
         }
     }
 
@@ -257,13 +259,14 @@ impl FindingKind {
                 Some(Self::UnnecessaryRestrictedVisibility)
             }
             "hawk::unnecessary_crate_visibility" => Some(Self::UnnecessaryCrateVisibility),
+            "hawk::test_only" => Some(Self::TestOnly),
             _ => None,
         }
     }
 
     pub const fn visibility_reduction(self) -> Option<VisibilityReduction> {
         match self {
-            Self::DeadPublic => None,
+            Self::DeadPublic | Self::TestOnly => None,
             Self::UnnecessaryPublic => Some(VisibilityReduction::Crate),
             Self::UnnecessaryRestrictedVisibility => Some(VisibilityReduction::Private),
             Self::UnnecessaryCrateVisibility => Some(VisibilityReduction::Super),
@@ -616,6 +619,47 @@ pub fn analyze_with_options<'a>(
     );
 
     let mut findings = Vec::new();
+    let mut reported_test_only = FxHashSet::default();
+    for (fragment, definition) in production_fragments
+        .iter()
+        .filter(|fragment| audited_fragments.contains(fragment))
+        .flat_map(|fragment| {
+            fragment
+                .definitions
+                .iter()
+                .map(move |definition| (fragment, definition))
+        })
+    {
+        let identity = definition_identity(definition);
+        if !production_targets.contains(fragment.compilation_target.as_str())
+            || definition.kind == DefinitionKind::Other
+            || (definition.kind == DefinitionKind::Reexport && !definition.visible_reexport_api)
+            || definition.span.is_none()
+            || !candidate_crates.contains(&definition.crate_name)
+            || excluded_crates.contains(&definition.crate_name)
+            || fragment.product_root_kind == Some(ProductionTargetKind::Binary)
+            || !reported_test_only.insert(identity)
+        {
+            continue;
+        }
+
+        let is_production_live = is_live(
+            definition,
+            &production_reexport_targets,
+            &production,
+            &equivalents,
+        );
+        let is_test_live = is_live(definition, &test_reexport_targets, &tests, &equivalents);
+        if !is_production_live && is_test_live {
+            findings.push(Finding {
+                kind: FindingKind::TestOnly,
+                definition,
+                test_only: true,
+                test_compiled_only: false,
+            });
+        }
+    }
+
     let mut reported = FxHashSet::default();
     let production_definitions: FxHashSet<_> = production_fragments
         .iter()
@@ -838,7 +882,10 @@ fn preserve_uniform_field_visibility_findings<'a>(
         .collect();
 
     findings.retain_mut(|finding| {
-        if finding.kind == FindingKind::DeadPublic {
+        if matches!(
+            finding.kind,
+            FindingKind::DeadPublic | FindingKind::TestOnly
+        ) {
             return true;
         }
         let Some(identity) = field_group_identity(finding.definition) else {
@@ -1341,6 +1388,7 @@ mod tests {
     #[test]
     fn finding_kind_determines_visibility_reduction() {
         assert_eq!(FindingKind::DeadPublic.visibility_reduction(), None);
+        assert_eq!(FindingKind::TestOnly.visibility_reduction(), None);
         assert_eq!(
             FindingKind::UnnecessaryPublic.visibility_reduction(),
             Some(VisibilityReduction::Crate)
@@ -1810,6 +1858,123 @@ mod tests {
     }
 
     #[test]
+    fn test_only_findings_cover_source_declarations_required_by_integration_tests() {
+        let kinds = [
+            DefinitionKind::Function,
+            DefinitionKind::InherentMethod,
+            DefinitionKind::InherentAssociatedConstant,
+            DefinitionKind::Trait,
+            DefinitionKind::Struct,
+            DefinitionKind::Enum,
+            DefinitionKind::Union,
+            DefinitionKind::TypeAlias,
+            DefinitionKind::Constant,
+            DefinitionKind::Static,
+            DefinitionKind::Field,
+            DefinitionKind::EnumVariant,
+            DefinitionKind::Module,
+        ];
+        let declarations: Vec<_> = kinds
+            .into_iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                source(
+                    typed_node(&format!("item_{index}"), "lib", true, kind),
+                    index + 1,
+                )
+            })
+            .collect();
+        let mut production = fragments(declarations.clone(), vec![]);
+        let integration_root = node("integration_root", "integration_test", false);
+        let mut test_edges: Vec<_> = declarations
+            .iter()
+            .map(|definition| Edge {
+                from: integration_root.id,
+                to: definition.id,
+                kind: EdgeKind::Body,
+            })
+            .collect();
+        let mut reexport = source(
+            typed_node("alias", "lib", true, DefinitionKind::Reexport),
+            declarations.len() + 1,
+        );
+        reexport.visible_reexport_api = true;
+        let private_import = source(
+            typed_node("private_import", "lib", false, DefinitionKind::Reexport),
+            declarations.len() + 2,
+        );
+        test_edges.push(Edge {
+            from: reexport.id,
+            to: declarations[0].id,
+            kind: EdgeKind::Reexport,
+        });
+        test_edges.push(Edge {
+            from: private_import.id,
+            to: declarations[0].id,
+            kind: EdgeKind::Reexport,
+        });
+        production[1].definitions.push(reexport.clone());
+        production[1].definitions.push(private_import.clone());
+        let tests = vec![
+            Fragment {
+                protocol_version: ProtocolVersion,
+                package_name: "integration_test".into(),
+                crate_name: "integration_test".into(),
+                compilation_target: "aarch64-apple-darwin".into(),
+                crate_id: test_id("integration_test"),
+                crate_root: Some("integration_test/tests/test.rs".into()),
+                is_product_root: true,
+                product_root_kind: None,
+                test_surface: true,
+                non_production_consumer: true,
+                definitions: vec![integration_root.clone()],
+                edges: test_edges.clone(),
+                roots: vec![integration_root.id],
+                conservative_roots: vec![],
+                required_public_roots: vec![],
+            },
+            Fragment {
+                protocol_version: ProtocolVersion,
+                package_name: "lib".into(),
+                crate_name: "lib".into(),
+                compilation_target: "aarch64-apple-darwin".into(),
+                crate_id: test_id("lib"),
+                crate_root: Some("lib/src/lib.rs".into()),
+                is_product_root: false,
+                product_root_kind: None,
+                test_surface: false,
+                non_production_consumer: false,
+                definitions: declarations
+                    .into_iter()
+                    .chain([reexport, private_import])
+                    .collect(),
+                edges: vec![],
+                roots: vec![],
+                conservative_roots: vec![],
+                required_public_roots: vec![],
+            },
+        ];
+
+        let findings =
+            analyze_with_tests(&production, &tests, &candidate_crates(), &HashSet::new());
+        let test_only: Vec<_> = findings
+            .iter()
+            .filter(|finding| finding.kind == FindingKind::TestOnly)
+            .map(|finding| finding.definition.kind)
+            .collect();
+
+        assert_eq!(test_only.len(), kinds.len() + 1);
+        assert!(kinds.into_iter().all(|kind| test_only.contains(&kind)));
+        assert!(test_only.contains(&DefinitionKind::Reexport));
+        assert!(!findings.iter().any(|finding| {
+            finding.kind == FindingKind::TestOnly
+                && finding.definition.id == test_id("private_import")
+        }));
+        assert!(findings.iter().all(|finding| finding.test_only));
+        assert!(findings.iter().all(|finding| !finding.test_compiled_only));
+    }
+
+    #[test]
     fn library_products_recognize_test_reachable_equivalent_callers() {
         let mut production = fragments(
             vec![
@@ -2244,7 +2409,9 @@ mod tests {
             true,
         );
 
-        assert!(findings.is_empty());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].kind, FindingKind::TestOnly);
+        assert_eq!(findings[0].definition.id, test_id("production_required"));
     }
 
     #[test]
@@ -2800,11 +2967,19 @@ mod tests {
         let findings =
             analyze_with_tests(&input, &test_input, &candidate_crates(), &HashSet::new());
 
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].kind, FindingKind::UnnecessaryPublic);
-        assert_eq!(findings[0].definition.id, test_id("helper"));
-        assert!(findings[0].test_only);
-        assert!(!findings[0].test_compiled_only);
+        assert_eq!(findings.len(), 3);
+        assert!(findings.iter().any(|finding| {
+            finding.kind == FindingKind::UnnecessaryPublic
+                && finding.definition.id == test_id("helper")
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.kind == FindingKind::TestOnly && finding.definition.id == test_id("entry")
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.kind == FindingKind::TestOnly && finding.definition.id == test_id("helper")
+        }));
+        assert!(findings.iter().all(|finding| finding.test_only));
+        assert!(findings.iter().all(|finding| !finding.test_compiled_only));
     }
 
     #[test]
@@ -2842,11 +3017,17 @@ mod tests {
             &HashSet::new(),
         );
 
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].kind, FindingKind::UnnecessaryPublic);
-        assert_eq!(findings[0].definition.id, test_id("production_helper"));
-        assert!(findings[0].test_only);
-        assert!(!findings[0].test_compiled_only);
+        assert_eq!(findings.len(), 2);
+        assert!(findings.iter().any(|finding| {
+            finding.kind == FindingKind::UnnecessaryPublic
+                && finding.definition.id == test_id("production_helper")
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.kind == FindingKind::TestOnly
+                && finding.definition.id == test_id("production_helper")
+        }));
+        assert!(findings.iter().all(|finding| finding.test_only));
+        assert!(findings.iter().all(|finding| !finding.test_compiled_only));
     }
 
     #[test]

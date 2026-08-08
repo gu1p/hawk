@@ -40,6 +40,8 @@ unnecessarily public symbols across crates within a single workspace.
   become private.
 - Optionally reports `hawk::unnecessary_crate_visibility` for `pub(crate)`
   items that can become `pub(super)`.
+- Optionally reports `hawk::test_only` for source declarations that are live
+  only from tests, benches, examples, or doctests.
 - Models production separately from tests, benches, examples, and doctests.
 - Applies machine-applicable visibility fixes through `cargo fix`.
 - Uses Clippy-style `-A`/`-W`/`-D` lint levels for incremental CI adoption.
