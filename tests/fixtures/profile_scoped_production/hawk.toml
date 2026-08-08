@@ -1,0 +1,19 @@
+[[feature-profile]]
+name = "all"
+all-features = true
+
+[[feature-profile]]
+name = "minimal"
+no-default-features = true
+
+[[production]]
+package = "app"
+lib = "app"
+feature-profiles = ["all", "minimal"]
+reason = "library shipped in every feature profile"
+
+[[production]]
+package = "app"
+bin = "debug"
+feature-profiles = ["all"]
+reason = "debug binary requires the debug feature"

@@ -414,13 +414,18 @@ pub(crate) fn run(mut raw_args: Vec<String>) -> Result<ExitCode> {
             production_products.push(ProductionSelection {
                 package: &consumer.package,
                 product: &consumer.product,
+                feature_profiles: consumer.feature_profiles.as_deref(),
             });
         }
     }
     production_products.extend(
         inferred_production_products
             .iter()
-            .map(|(package, product)| ProductionSelection { package, product }),
+            .map(|(package, product)| ProductionSelection {
+                package,
+                product,
+                feature_profiles: None,
+            }),
     );
     if production_products.is_empty() {
         if config.path().is_none() {
@@ -505,6 +510,17 @@ pub(crate) fn run(mut raw_args: Vec<String>) -> Result<ExitCode> {
         .into_owned();
     let mut profile_graphs = Vec::new();
     for (index, feature_profile) in config.feature_profiles().iter().enumerate() {
+        let profile_production_products: Vec<_> = production_products
+            .iter()
+            .copied()
+            .filter(|product| product.applies_to(feature_profile))
+            .collect();
+        if profile_production_products.is_empty() {
+            bail!(
+                "no production targets apply to feature profile `{}`; select it from at least one `[[production]]` entry",
+                feature_profile.name()
+            );
+        }
         let mut metadata_command = MetadataCommand::new();
         metadata_command
             .current_dir(&workspace_root)
@@ -546,9 +562,10 @@ pub(crate) fn run(mut raw_args: Vec<String>) -> Result<ExitCode> {
             run_id: format!("{run_id}-feature-profile-{index}"),
             production_dir,
             non_production_dir,
+            production_products: profile_production_products.clone(),
             production_consumer_packages: production_workspace_packages(
                 &resolved_metadata,
-                &production_products,
+                &profile_production_products,
                 &analysis_target,
             )?,
         });
@@ -582,7 +599,7 @@ pub(crate) fn run(mut raw_args: Vec<String>) -> Result<ExitCode> {
     let mut test_fragments = Vec::new();
     for profile_graph in &profile_graphs {
         let (profile_production, profile_tests) =
-            collect_profile_fragments(&cargo, profile_graph, &production_products, "initial")?;
+            collect_profile_fragments(&cargo, profile_graph, "initial")?;
         production_fragments.extend(profile_production);
         test_fragments.extend(profile_tests);
     }
@@ -700,7 +717,6 @@ pub(crate) fn run(mut raw_args: Vec<String>) -> Result<ExitCode> {
             (production_fragments, test_fragments) = collect_profile_fragments(
                 &cargo,
                 profile_graph,
-                &production_products,
                 &format!("post-fix-{fix_iteration}"),
             )?;
         }
@@ -1067,6 +1083,18 @@ struct WorkspaceLibrarySource {
 struct ProductionSelection<'a> {
     package: &'a str,
     product: &'a ProductionProduct,
+    feature_profiles: Option<&'a [String]>,
+}
+
+impl ProductionSelection<'_> {
+    fn applies_to(self, feature_profile: &FeatureProfile) -> bool {
+        self.applies_to_name(feature_profile.name())
+    }
+
+    fn applies_to_name(self, feature_profile: &str) -> bool {
+        self.feature_profiles
+            .is_none_or(|profiles| profiles.iter().any(|profile| profile == feature_profile))
+    }
 }
 
 struct FeatureProfileGraph<'a> {
@@ -1074,6 +1102,7 @@ struct FeatureProfileGraph<'a> {
     run_id: String,
     production_dir: PathBuf,
     non_production_dir: PathBuf,
+    production_products: Vec<ProductionSelection<'a>>,
     production_consumer_packages: HashSet<String>,
 }
 
@@ -1597,7 +1626,6 @@ fn normalize_workspace_source_path(path: &Path) -> PathBuf {
 fn collect_profile_fragments(
     cargo: &InstrumentedCargo<'_>,
     profile_graph: &FeatureProfileGraph<'_>,
-    production_products: &[ProductionSelection<'_>],
     phase: &str,
 ) -> Result<(Vec<Fragment>, Vec<Fragment>)> {
     let CollectedFragments {
@@ -1605,7 +1633,7 @@ fn collect_profile_fragments(
         non_production: test_fragments,
     } = cargo.collect_fragments(
         &format!("{}-{phase}", profile_graph.run_id),
-        production_products,
+        &profile_graph.production_products,
         &profile_graph.production_dir,
         &profile_graph.non_production_dir,
         profile_graph.feature_profile,
@@ -2637,6 +2665,7 @@ mod tests {
             CargoInvocation::CheckProduction(ProductionSelection {
                 package: "app-package",
                 product: &binary,
+                feature_profiles: None,
             }),
             "check",
             &["--package", "app-package", "--bin", "app-cli"],
@@ -2649,6 +2678,7 @@ mod tests {
             CargoInvocation::CheckProduction(ProductionSelection {
                 package: "api-package",
                 product: &library,
+                feature_profiles: None,
             }),
             "check",
             &["--package", "api-package", "--lib"],
@@ -2718,6 +2748,26 @@ mod tests {
             Some((fix_plan, true)),
             false,
         );
+    }
+
+    #[test]
+    fn production_selection_applies_only_to_selected_feature_profiles() {
+        let product = ProductionProduct::Binary("debug".to_owned());
+        let profiles = vec!["all".to_owned()];
+        let selected = ProductionSelection {
+            package: "app",
+            product: &product,
+            feature_profiles: Some(&profiles),
+        };
+        let unrestricted = ProductionSelection {
+            feature_profiles: None,
+            ..selected
+        };
+
+        assert!(selected.applies_to_name("all"));
+        assert!(!selected.applies_to_name("minimal"));
+        assert!(unrestricted.applies_to_name("all"));
+        assert!(unrestricted.applies_to_name("minimal"));
     }
 
     #[test]

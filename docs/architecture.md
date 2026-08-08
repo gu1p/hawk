@@ -91,6 +91,13 @@ lib = "uv_distribution"
 reason = "internal library consumed only within this workspace"
 ```
 
+A production entry may name a nonempty subset of configured profiles with
+`feature-profiles = ["all", "minimal"]`. Omission applies the product to every
+profile. Hawk filters production Cargo invocations and production dependency
+classification per profile, so a feature-gated binary is not requested in an
+incompatible profile. At least one production target must remain in every
+profile.
+
 Binary entries seed the production graph at their executable entry points.
 Library entries instead seed reachability from ordinary cross-crate workspace
 callers and conservative retained-code roots; unreachable private declarations do
@@ -113,8 +120,14 @@ workspace selection with explicit packages:
 
 Instrumented builds use the configured feature profiles and one selected
 target triple. With no explicit profiles, Hawk uses one `--all-features`
-profile. A `target = "cfg(...)"` selector on a production entry, override, or
-exclusion limits it to applicable target configurations.
+profile. Within each profile, Hawk compiles only its applicable production
+products but still compiles the workspace non-production surface and selected
+doctests. It merges every profile's production and non-production fragments
+before analysis. Candidate-crate selection remains global: a mixed library and
+binary configuration audits all internal workspace libraries even when the
+binary applies to only some profiles. A `target = "cfg(...)"` selector on a
+production entry, override, or exclusion limits it to applicable target
+configurations.
 
 Workspace library target names must be unique after Rust crate-name
 normalization. Hawk uses the crate name to associate compiler fragments,

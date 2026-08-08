@@ -7,6 +7,7 @@
 ### Other changes
 
 - Add an opt-in `hawk::test_only` lint for production declarations reachable only from non-production targets
+- Allow each configured production target to select the feature profiles in which it is compiled
 
 ## 0.1.13
 

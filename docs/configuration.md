@@ -46,11 +46,42 @@ Ordinary library targets can use explicit Rust library crate types, including
 `crate-type = ["rlib"]`.
 
 Every package and target must belong to the selected Cargo workspace. At least
-one production target must apply to the analyzed target.
+one production target must apply to the analyzed target and to each configured
+feature profile.
 
-All production targets are analyzed with the same feature profiles and
-compilation target. When `hawk.toml` exists, its configured targets remain
-authoritative; Hawk does not add other workspace binaries implicitly.
+By default, every production target is compiled under every feature profile.
+Use `feature-profiles` to limit a product to the profiles in which Cargo can
+build it. This is useful for a binary with `required-features` while a library
+from the same package remains a production target in every profile:
+
+```toml
+[[feature-profile]]
+name = "all"
+all-features = true
+
+[[feature-profile]]
+name = "minimal"
+no-default-features = true
+
+[[production]]
+package = "app"
+lib = "app"
+feature-profiles = ["all", "minimal"]
+reason = "native library shipped in every feature profile"
+
+[[production]]
+package = "app"
+bin = "video-debug"
+feature-profiles = ["all"]
+reason = "debug binary requires its opt-in feature"
+```
+
+The list must be nonempty, contain no duplicate names, and reference only
+configured `[[feature-profile]]` names. Omitting `feature-profiles` means all
+profiles, including Hawk's implicit `all-features` profile when no matrix is
+configured. Feature-profile selection is independent of the compilation
+target. When `hawk.toml` exists, its configured targets remain authoritative;
+Hawk does not add other workspace binaries implicitly.
 
 ## Doctest packages
 
@@ -87,11 +118,12 @@ no-default-features = true
 features = ["serde"]
 ```
 
-Hawk compiles every production target, workspace non-production target, and
-selected doctest package under each profile. Fragments are stored separately for
-each profile, then their reachability and visibility requirements are combined
-before diagnostics are produced. A declaration required in any configured
-profile is therefore preserved.
+Hawk compiles every applicable production target, every workspace
+non-production target, and every selected doctest package under each profile.
+Only production targets explicitly limited with `feature-profiles` are skipped.
+Fragments are stored separately for each profile, then their reachability and
+visibility requirements are combined before diagnostics are produced. A
+declaration required in any configured profile is therefore preserved.
 
 Profile names must be unique and contain only ASCII letters, digits, `-`, or
 `_`. `all-features = true` cannot be combined with `no-default-features` or an

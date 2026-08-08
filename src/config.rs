@@ -71,6 +71,7 @@ enum ExclusionSelector {
 pub(crate) struct ProductionConsumer {
     pub(crate) package: String,
     pub(crate) product: ProductionProduct,
+    pub(crate) feature_profiles: Option<Vec<String>>,
     pub(crate) reason: String,
     pub(crate) target: Option<Platform>,
     pub(crate) span: ConfigSpan,
@@ -263,6 +264,8 @@ struct RawProductionConsumer {
     binary: Option<String>,
     #[serde(rename = "lib")]
     library: Option<String>,
+    #[serde(rename = "feature-profiles")]
+    feature_profiles: Option<Vec<String>>,
     reason: String,
     target: Option<String>,
 }
@@ -420,7 +423,9 @@ impl Config {
             });
         }
         if feature_profiles.is_empty() {
-            feature_profiles.push(FeatureProfile::all_features());
+            let default_profile = FeatureProfile::all_features();
+            feature_profile_names.insert(default_profile.name.clone());
+            feature_profiles.push(default_profile);
         }
         let mut overrides = Vec::new();
         for entry in raw.overrides {
@@ -575,9 +580,51 @@ impl Config {
                     })
                 })
                 .transpose()?;
+            let selected_feature_profiles = entry
+                .feature_profiles
+                .map(|profiles| {
+                    if profiles.is_empty() {
+                        bail!(
+                            "production consumer in {}:{}:{} must select at least one `feature-profiles` entry",
+                            path.display(),
+                            span.line,
+                            span.column
+                        );
+                    }
+                    let mut selected = HashSet::new();
+                    for profile in &profiles {
+                        if profile.trim().is_empty() {
+                            bail!(
+                                "production consumer in {}:{}:{} must not contain an empty feature profile name",
+                                path.display(),
+                                span.line,
+                                span.column
+                            );
+                        }
+                        if !feature_profile_names.contains(profile) {
+                            bail!(
+                                "production consumer in {}:{}:{} references unknown feature profile `{profile}`",
+                                path.display(),
+                                span.line,
+                                span.column
+                            );
+                        }
+                        if !selected.insert(profile) {
+                            bail!(
+                                "production consumer in {}:{}:{} contains duplicate feature profile `{profile}`",
+                                path.display(),
+                                span.line,
+                                span.column
+                            );
+                        }
+                    }
+                    Ok(profiles)
+                })
+                .transpose()?;
             production.push(ProductionConsumer {
                 package: entry.package,
                 product,
+                feature_profiles: selected_feature_profiles,
                 reason: entry.reason,
                 target,
                 span,
@@ -2000,6 +2047,102 @@ features = ["serde", "cli"]
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn production_consumers_select_feature_profiles_or_default_to_all() {
+        let directory = tempfile::tempdir().expect("temporary configuration directory");
+        let path = directory.path().join("hawk.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[feature-profile]]
+name = "all"
+all-features = true
+
+[[feature-profile]]
+name = "minimal"
+no-default-features = true
+
+[[production]]
+package = "app"
+lib = "app"
+reason = "library product"
+
+[[production]]
+package = "app"
+bin = "debug"
+feature-profiles = ["all"]
+reason = "feature-gated debug product"
+"#,
+        )
+        .expect("write configuration");
+
+        let config = Config::load(directory.path(), Some(&path)).expect("load configuration");
+        let consumers: Vec<_> = config
+            .production_consumers(&target("aarch64-apple-darwin", &[]))
+            .collect();
+
+        assert_eq!(consumers.len(), 2);
+        assert_eq!(consumers[0].feature_profiles, None);
+        assert_eq!(
+            consumers[1].feature_profiles.as_deref(),
+            Some(&["all".to_owned()][..])
+        );
+    }
+
+    #[test]
+    fn production_feature_profile_selection_must_not_be_empty() {
+        let error = invalid_production_feature_profiles("[]");
+
+        assert!(error.contains("must select at least one `feature-profiles` entry"));
+    }
+
+    #[test]
+    fn production_feature_profile_selection_rejects_empty_names() {
+        let error = invalid_production_feature_profiles("[\"\"]");
+
+        assert!(error.contains("must not contain an empty feature profile name"));
+    }
+
+    #[test]
+    fn production_feature_profile_selection_rejects_unknown_names() {
+        let error = invalid_production_feature_profiles("[\"missing\"]");
+
+        assert!(error.contains("references unknown feature profile `missing`"));
+    }
+
+    #[test]
+    fn production_feature_profile_selection_rejects_duplicates() {
+        let error = invalid_production_feature_profiles("[\"all\", \"all\"]");
+
+        assert!(error.contains("contains duplicate feature profile `all`"));
+    }
+
+    fn invalid_production_feature_profiles(selection: &str) -> String {
+        let directory = tempfile::tempdir().expect("temporary configuration directory");
+        let path = directory.path().join("hawk.toml");
+        std::fs::write(
+            &path,
+            format!(
+                r#"
+[[feature-profile]]
+name = "all"
+all-features = true
+
+[[production]]
+package = "app"
+bin = "app"
+feature-profiles = {selection}
+reason = "binary product"
+"#
+            ),
+        )
+        .expect("write configuration");
+
+        Config::load(directory.path(), Some(&path))
+            .expect_err("reject invalid production feature profiles")
+            .to_string()
     }
 
     #[test]
