@@ -2158,6 +2158,57 @@ fn feature_profiles_union_reachability_across_configurations() {
     }
 }
 
+#[test]
+fn production_targets_apply_only_to_selected_feature_profiles() {
+    let context = HawkTestContext::new("profile_scoped_production");
+    let output = context.run(&[
+        "--only",
+        "test-only",
+        "-W",
+        "hawk::test_only",
+        "--output-format=json",
+    ]);
+
+    context.assert_success(&output);
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout contains one JSON report");
+    assert_eq!(
+        report["summary"]["feature_profiles"],
+        serde_json::json!(["all", "minimal"])
+    );
+    assert_eq!(
+        report["summary"]["production"].as_array().map(Vec::len),
+        Some(2)
+    );
+    let diagnostics = report["diagnostics"]
+        .as_array()
+        .expect("diagnostics is an array");
+    assert_eq!(diagnostics.len(), 1, "unexpected diagnostics: {report}");
+    assert_eq!(diagnostics[0]["code"], "hawk::test_only");
+    assert_eq!(diagnostics[0]["identity"]["crate"], "internal");
+    assert_eq!(diagnostics[0]["identity"]["item"], "test_only_api");
+}
+
+#[test]
+fn every_feature_profile_requires_a_production_target() {
+    let context = HawkTestContext::new("profile_scoped_production");
+    let configuration_path = context.workspace().join("hawk.toml");
+    let configuration = fs::read_to_string(&configuration_path)
+        .expect("read fixture configuration")
+        .replace(
+            "feature-profiles = [\"all\", \"minimal\"]",
+            "feature-profiles = [\"all\"]",
+        );
+    fs::write(configuration_path, configuration).expect("restrict every production target");
+
+    let output = context.run(&[]);
+
+    assert!(!output.status.success());
+    assert!(context.normalized_stderr(&output).contains(
+        "no production targets apply to feature profile `minimal`; select it from at least one `[[production]]` entry"
+    ));
+}
+
 /// Hawk merges definitions from separate compilations by source span, so one
 /// workspace file must have exactly one spelling within a run. Cargo compiles
 /// the same file from the workspace root in one target and from the package

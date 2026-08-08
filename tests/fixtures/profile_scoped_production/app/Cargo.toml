@@ -1,0 +1,16 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+debug-web = ["internal/debug-web"]
+
+[dependencies]
+internal = { path = "../internal" }
+
+[[bin]]
+name = "debug"
+path = "src/bin/debug.rs"
+required-features = ["debug-web"]

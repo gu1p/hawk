@@ -64,6 +64,26 @@ only by an omitted binary can be reported as unnecessary or dead. See
 [Configuration](configuration.md) for multiple binaries, target-scoped entries,
 and accepted findings.
 
+If a production binary has Cargo `required-features`, scope it to compatible
+feature profiles while keeping other products active across the matrix:
+
+```toml
+[[production]]
+package = "app"
+lib = "app"
+reason = "native library shipped in every profile"
+
+[[production]]
+package = "app"
+bin = "video-debug"
+feature-profiles = ["all"]
+reason = "debug binary requires an opt-in feature"
+```
+
+Omitting `feature-profiles` selects every configured profile. Hawk still
+collects tests, benches, examples, and doctests for every profile and combines
+their evidence with all applicable production builds before reporting.
+
 ## Run analysis
 
 Run `cargo hawk` without a subcommand to see the available commands. Use
@@ -77,11 +97,12 @@ Run `cargo hawk` without a subcommand to see the available commands. Use
 Configured production targets and workspace non-production targets are
 analyzed under `--all-features --locked` on the host target by default. A
 `[[feature-profile]]` matrix in `hawk.toml` can replace that single feature
-selection; Hawk unions evidence from every profile before producing
-diagnostics. The non-production surface includes tests, benches, examples, and
-compile-only doctests, which can be restricted to explicit packages with
-`[[doctest]]` entries. Diagnostics apply to workspace library crates compiled
-for those targets, including declarations enabled only under `cfg(test)`.
+selection; each production entry may use `feature-profiles` to select a subset,
+and Hawk unions evidence from every profile before producing diagnostics. The
+non-production surface includes tests, benches, examples, and compile-only
+doctests, which can be restricted to explicit packages with `[[doctest]]`
+entries. Diagnostics apply to workspace library crates compiled for those
+targets, including declarations enabled only under `cfg(test)`.
 
 Workspace libraries are treated as internal unless exempted. Exclude a
 library crate whose public API is consumed outside the configured production
