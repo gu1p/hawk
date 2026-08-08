@@ -176,6 +176,38 @@ fn write_diagnostic(
         production_description
     };
     let (message, help, marker) = match (finding.kind, finding.definition.kind, finding.test_only) {
+        (FindingKind::TestOnly, DefinitionKind::EnumVariant, _) => (
+            format!(
+                "enum variant `{}` is reachable only from non-production targets",
+                finding.definition.name
+            ),
+            "consider removing this variant and its non-production uses",
+            "test-only enum variant",
+        ),
+        (FindingKind::TestOnly, DefinitionKind::Reexport, _) => (
+            format!(
+                "re-export `{}` is reachable only from non-production targets",
+                finding.definition.name
+            ),
+            "consider removing this re-export and its non-production uses",
+            "test-only re-export",
+        ),
+        (FindingKind::TestOnly, DefinitionKind::Module, _) => (
+            format!(
+                "module `{}` is reachable only from non-production targets",
+                finding.definition.name
+            ),
+            "consider removing this module and its non-production uses",
+            "test-only module",
+        ),
+        (FindingKind::TestOnly, _, _) => (
+            format!(
+                "`{}` is reachable only from non-production targets",
+                finding.definition.name
+            ),
+            "consider removing this declaration and its non-production uses",
+            "test-only declaration",
+        ),
         (FindingKind::DeadPublic, DefinitionKind::EnumVariant, _) => (
             format!(
                 "`{}` is a public enum variant but is not reachable from {dead_reachability_source}",

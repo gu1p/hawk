@@ -2,6 +2,12 @@
 
 <!-- prettier-ignore-start -->
 
+## Unreleased
+
+### Other changes
+
+- Add an opt-in `hawk::test_only` lint for production declarations reachable only from non-production targets
+
 ## 0.1.13
 
 Released on 2026-08-21.

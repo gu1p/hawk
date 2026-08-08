@@ -189,7 +189,10 @@ impl DiagnosticKind {
     }
 
     const fn default_level(self) -> LintLevel {
-        if matches!(self, Self::Finding(FindingKind::UnnecessaryCrateVisibility)) {
+        if matches!(
+            self,
+            Self::Finding(FindingKind::UnnecessaryCrateVisibility | FindingKind::TestOnly)
+        ) {
             LintLevel::Allow
         } else {
             LintLevel::Warn
@@ -281,11 +284,15 @@ enum OutputFormat {
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum OnlyFinding {
     DeadPublic,
+    TestOnly,
 }
 
 impl OnlyFinding {
     const fn includes(self, kind: FindingKind) -> bool {
-        matches!((self, kind), (Self::DeadPublic, FindingKind::DeadPublic))
+        matches!(
+            (self, kind),
+            (Self::DeadPublic, FindingKind::DeadPublic) | (Self::TestOnly, FindingKind::TestOnly)
+        )
     }
 }
 
@@ -986,6 +993,7 @@ const fn json_finding_kind(kind: FindingKind) -> &'static str {
         FindingKind::UnnecessaryPublic => "unnecessary_public",
         FindingKind::UnnecessaryRestrictedVisibility => "unnecessary_restricted_visibility",
         FindingKind::UnnecessaryCrateVisibility => "unnecessary_crate_visibility",
+        FindingKind::TestOnly => "test_only",
     }
 }
 
@@ -2727,6 +2735,7 @@ mod tests {
             json_finding_kind(FindingKind::UnnecessaryCrateVisibility),
             "unnecessary_crate_visibility"
         );
+        assert_eq!(json_finding_kind(FindingKind::TestOnly), "test_only");
 
         for (kind, expected) in [
             (DefinitionKind::Function, "function"),
@@ -2944,6 +2953,7 @@ mod tests {
             levels.level(FindingKind::UnnecessaryCrateVisibility),
             LintLevel::Allow
         );
+        assert_eq!(levels.level(FindingKind::TestOnly), LintLevel::Allow);
         assert_eq!(
             levels.level(ConfigDiagnosticKind::UnknownItem),
             LintLevel::Allow
@@ -2977,6 +2987,31 @@ mod tests {
             levels.level(FindingKind::UnnecessaryCrateVisibility),
             LintLevel::Deny
         );
+    }
+
+    #[test]
+    fn test_only_is_allow_by_default_and_can_be_denied() {
+        let defaults = Args::command()
+            .try_get_matches_from(["cargo-hawk", "check"])
+            .expect("parse default arguments");
+        let defaults = LintLevels::from_matches(
+            defaults
+                .subcommand_matches("check")
+                .expect("check subcommand matches"),
+        )
+        .expect("valid lint selectors");
+        assert_eq!(defaults.level(FindingKind::TestOnly), LintLevel::Allow);
+
+        let denied = Args::command()
+            .try_get_matches_from(["cargo-hawk", "check", "-D", "hawk::test_only"])
+            .expect("parse test-only lint level");
+        let denied = LintLevels::from_matches(
+            denied
+                .subcommand_matches("check")
+                .expect("check subcommand matches"),
+        )
+        .expect("valid lint selectors");
+        assert_eq!(denied.level(FindingKind::TestOnly), LintLevel::Deny);
     }
 
     #[test]
