@@ -78,7 +78,7 @@ jobs:
           ./node_modules/.bin/prettier --check .
 
       - name: "Push rebased main"
-        if: steps.rebase.outputs.changed == 'true'
+        if: steps.rebase.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
